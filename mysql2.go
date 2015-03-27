@@ -16,7 +16,7 @@ func Create(connStr string) (db MySQL, err error) {
 	return
 }
 
-func (db MySQL) QueryFromDb(sql string) map[int]map[string]string {
+func (db MySQL) SyncQuery(sql string) map[int]map[string]string {
 	rows, err := db.Query(sql)
 	if err != nil {
 		panic(err.Error())
@@ -24,7 +24,7 @@ func (db MySQL) QueryFromDb(sql string) map[int]map[string]string {
 	defer rows.Close()
 	var cols, _ = rows.Columns()
 	var others = make([]interface{}, len(cols))
-	var data = make([]string, len(cols))
+	var data = make([][]byte, len(cols))
 	for i, _ := range others {
 		others[i] = &data[i]
 	}
@@ -38,23 +38,32 @@ func (db MySQL) QueryFromDb(sql string) map[int]map[string]string {
 		}
 		results[i] = make(map[string]string)
 		for k, v := range data {
-			results[i][cols[k]] = v
+			results[i][cols[k]] = string(v)
 		}
 		i++
 	}
 	return results
 }
 
-func (db MySQL) AsyncQuery(c chan<- map[string]string, sql string) {
-	var results = db.QueryFromDb(sql)
-	for _, info := range results {
-		select {
-		case c <- info:
-			continue
-		case <-time.After(100 * time.Millisecond):
-			panic("Timeout")
-			break
+func (db MySQL) AsyncQuery(sql string, timeout time.Duration) <-chan map[string]string {
+	var resultChan = make(chan map[string]string)
+	go func() {
+		defer close(resultChan)
+		var results = db.SyncQuery(sql)
+		if timeout == 0 {
+			timeout = 500 * time.Millisecond
 		}
-	}
-	close(c)
+		var timer = time.NewTimer(timeout)
+		for _, info := range results {
+			select {
+			case resultChan <- info:
+				timer.Stop()
+				continue
+			case <-timer.C:
+				panic("TimeoutNew")
+				break
+			}
+		}
+	}()
+	return resultChan
 }
